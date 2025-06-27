@@ -48,7 +48,7 @@ StudentAnswer: {student_answer}
 """
 
 # Streamlit setup
-st.set_page_config(page_title="Assignment Grader (Groq)", layout="centered")
+st.set_page_config(page_title="AutoGrade (Groq)", layout="centered")
 st.title("Assignment Grader")
 
 # Input form
