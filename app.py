@@ -9,19 +9,26 @@ client_id = st.secrets["AUTH0_CLIENT_ID"]
 domain = st.secrets["AUTH0_DOMAIN"]
 
 # Login with Google (Auth0)
-user_info = login_button(
-    client_id=client_id,
-    domain=domain
-)
+from streamlit_auth0 import login_button
 
-st.set_page_config(page_title="AutoGrade (Groq)", layout="centered")
-st.title("Assignment Grader")
+# --- Login ---
+user_info = login_button(client_id=client_id, domain=domain)
 
-if not user_info:
+if user_info:
+    with st.sidebar:
+        st.markdown("**Signed in as:**")
+        st.markdown(f"{user_info['name']}")
+        st.markdown(f"{user_info['email']}")
+        if st.button("Sign Out"):
+            st.session_state.clear()
+            st.rerun()
+
+    # --- Main App Title ---
+    st.title("Assignment Grader")
+    st.success(f"Welcome, {user_info['name']}!")
+else:
     st.warning("Please log in with Google to continue.")
     st.stop()
-
-st.success(f"Welcome, {user_info['name']} ({user_info['email']})!")
 
 model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
