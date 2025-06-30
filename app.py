@@ -11,28 +11,20 @@ domain = st.secrets["AUTH0_DOMAIN"]
 # Login with Google (Auth0)
 from streamlit_auth0 import login_button
 
-
 # Login
-user_info = login_button(
-    client_id=client_id,
-    domain=domain
-)
+user_info = login_button(client_id=client_id, domain=domain)
+
 if user_info:
     with st.sidebar:
         st.markdown("**Signed in as:**")
-        st.markdown(user_info["name"])
-        st.markdown(user_info["email"])
+        st.markdown(f"{user_info['name']}")
+        st.markdown(f"{user_info['email']}")
         if st.button("Sign Out"):
             st.session_state.clear()
             st.rerun()
 
-    col1, col2 = st.columns([0.01, 0.99])
-    with col1:
-        st.empty()
-    with col2:
-        st.title("Assignment Grader")
-        st.success(f"Welcome, {user_info['name']}!")
-
+    st.title("Assignment Grader")
+    st.success(f"Welcome, {user_info['name']}!")
 else:
     st.warning("Please log in with Google to continue.")
     st.stop()
