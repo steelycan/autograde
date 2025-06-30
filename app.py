@@ -21,15 +21,15 @@ user_info = login_button(
 if user_info:
     with st.sidebar:
         st.markdown("**Signed in as:**")
-        st.markdown(f"{user_info['name']}")
-        st.markdown(f"{user_info['email']}")
+        st.markdown(user_info["name"])
+        st.markdown(user_info["email"])
         if st.button("Sign Out"):
             st.session_state.clear()
             st.rerun()
 
-    # --- Main App Title ---
-    st.title("Assignment Grader")
+    st.title("Autograde")
     st.success(f"Welcome, {user_info['name']}!")
+
 else:
     st.warning("Please log in with Google to continue.")
     st.stop()
