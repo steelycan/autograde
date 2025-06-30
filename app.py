@@ -1,20 +1,32 @@
 import streamlit as st
 import pandas as pd
-import requests
+import datetime
+from streamlit_auth0 import login_button
 from langchain.chat_models import init_chat_model
 
-# Initialize Groq model
+# Auth0 Credentials
+client_id = st.secrets["AUTH0_CLIENT_ID"]
+domain = st.secrets["AUTH0_DOMAIN"]
+
+# Login with Google (Auth0)
+user_info = login_button(
+    client_id=client_id,
+    domain=domain,
+    redirect_uri="https://autograde-xovtc2qw9o9vygb4owtrbm.streamlit.app/"
+)
+
+st.set_page_config(page_title="AutoGrade (Groq)", layout="centered")
+st.title("Assignment Grader")
+
+if not user_info:
+    st.warning("Please log in with Google to continue.")
+    st.stop()
+
+st.success(f"Welcome, {user_info['name']} ({user_info['email']})!")
+
 model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
-# Google Form submission URL
-GOOGLE_FORM_URL = ""
-FORM_FIELD_IDS = {
-    "question": "entry.1111111111",
-    "student_answer": "entry.2222222222",
-    "evaluation": "entry.3333333333"
-}
-
-# Prompt template
+# Prompt Template
 prompt_template = """
 You are an expert assignment grader.
 
@@ -22,36 +34,57 @@ Evaluate the StudentAnswer compared to the IdealAnswer using the rubric below.
 
 ## Grading Style: {grading_style}
 
-### Rubric
-- Content Accuracy (0–4): Are the key ideas and facts correct?
-- Completeness (0–3): Are all parts of the expected answer addressed?
-- Language and Clarity (0–3): Is the answer clear, well-phrased, and relevant?
+### Rubric (Total: 10 Marks)
 
-Assign marks for each part and provide a concise explanation for each score.
+1. **Content Accuracy (0–3)**  
+   - Are the key facts and concepts correct?
+
+2. **Completeness (0–2)**  
+   - Are all required parts of the answer included?
+
+3. **Language & Clarity (0–2)**  
+   - Is the response grammatically correct, clear, and easy to understand?
+
+4. **Depth of Understanding (0–2)**  
+   - Does the answer show critical thinking or insight?
+
+5. **Structure & Coherence (0–1)**  
+   - Is the answer logically organized and well-structured?
+
+---
 
 ### Input:
-Question: {question}
 
-IdealAnswer: {ideal_answer}
+**Question:**  
+{question}
 
-StudentAnswer: {student_answer}
+**IdealAnswer:**  
+{ideal_answer}
 
-### Output format (exactly this):
+**StudentAnswer:**  
+{student_answer}
+
+---
+
+### Output Format (exactly as shown below):
+
 ## Marks:
-- Content Accuracy: {{x}} / 4  
-- Completeness: {{y}} / 3  
-- Language/Clarity: {{z}} / 3  
-- Total: {{x+y+z}} / 10
+- Content Accuracy: x / 3  
+- Completeness: y / 2  
+- Language & Clarity: z / 2  
+- Depth of Understanding: p / 2  
+- Structure & Coherence: q / 1  
+- **Total: x+y+z+p+q / 10**
 
-## Explanation:
-{{brief explanation for each section}}
+## Justification:
+- **Content Accuracy**: <explanation>
+- **Completeness**: <explanation>
+- **Language & Clarity**: <explanation>
+- **Depth of Understanding**: <explanation>
+- **Structure & Coherence**: <explanation>
 """
 
-# Streamlit setup
-st.set_page_config(page_title="AutoGrade (Groq)", layout="centered")
-st.title("Assignment Grader")
-
-# Input form
+# Grading Form 
 with st.form("grading_form"):
     question = st.text_area("Enter the question")
     ideal_answer = st.text_area("Enter the ideal answer")
@@ -59,72 +92,61 @@ with st.form("grading_form"):
     grading_style = st.selectbox("Select grading style", ["Balanced", "Strict", "Lenient"])
     submitted = st.form_submit_button("Grade Answer")
 
-# Session history store
+# Session History
 if "history" not in st.session_state:
     st.session_state.history = []
 
-# Run the model and display structured output
+# Grading Logic
 if submitted:
     if question and ideal_answer and student_answer:
         with st.spinner("Grading in progress..."):
-            filled_prompt = prompt_template.format(
+            prompt = prompt_template.format(
                 question=question.strip(),
                 ideal_answer=ideal_answer.strip(),
                 student_answer=student_answer.strip(),
                 grading_style=grading_style
             )
-            response = model.invoke(filled_prompt)
+            response = model.invoke(prompt)
             evaluation = response.content
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             # Save to session history
-            record = {
-                "question": question,
-                "student_answer": student_answer,
-                "evaluation": evaluation
-            }
-            st.session_state.history.append(record)
-
-            # Send to Google Form if configured
-            if GOOGLE_FORM_URL:
-                form_data = {
-                    FORM_FIELD_IDS["question"]: question,
-                    FORM_FIELD_IDS["student_answer"]: student_answer,
-                    FORM_FIELD_IDS["evaluation"]: evaluation
-                }
-                try:
-                    requests.post(GOOGLE_FORM_URL, data=form_data)
-                except Exception as e:
-                    st.warning(f"Could not send to Google Form: {e}")
+            st.session_state.history.append({
+                "user": user_info["email"],
+                "timestamp": timestamp,
+                "question": question.strip(),
+                "student_answer": student_answer.strip(),
+                "evaluation": evaluation.strip()
+            })
 
             st.success("Grading completed.")
 
-            # Format output
-            if "## Marks:" in evaluation and "## Explanation:" in evaluation:
-                marks_section = evaluation.split("## Explanation:")[0].replace("## Marks:", "").strip()
-                explanation_section = evaluation.split("## Explanation:")[1].strip()
+            if "## Marks:" in evaluation and "## Justification:" in evaluation:
+                marks_section = evaluation.split("## Justification:")[0].replace("## Marks:", "").strip()
+                explanation_section = evaluation.split("## Justification:")[1].strip()
 
                 st.subheader("Marks Breakdown")
                 st.code(marks_section, language="markdown")
 
-                st.subheader("Explanation")
+                st.subheader("Justification")
                 st.markdown(explanation_section)
             else:
-                st.warning("Unexpected output format. Showing full response:")
+                st.warning("Unexpected format. Full response below:")
                 st.markdown(evaluation)
     else:
-        st.warning("Please complete all fields.")
+        st.warning("Please fill in all fields.")
 
-# Evaluation history and download
+# History + CSV Export
 if st.session_state.history:
     with st.expander("Previous Evaluations"):
-        for idx, entry in enumerate(st.session_state.history[::-1], 1):
-            st.markdown(f"### Attempt #{len(st.session_state.history) - idx + 1}")
+        for i, entry in enumerate(st.session_state.history[::-1], 1):
+            st.markdown(f"### Attempt #{len(st.session_state.history) - i + 1}")
+            st.markdown(f"**User**: {entry['user']}")
+            st.markdown(f"**Time**: {entry['timestamp']}")
             st.markdown(f"**Question**: {entry['question']}")
             st.markdown(f"**Student Answer**: {entry['student_answer']}")
-            st.markdown(entry['evaluation'])
+            st.markdown(entry["evaluation"])
             st.markdown("---")
 
-    # CSV download
     df = pd.DataFrame(st.session_state.history)
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button("Download Grading History", csv, "grading_history.csv", "text/csv")
+    st.download_button("Download Grading History", df.to_csv(index=False).encode(), "grading_history.csv", "text/csv")
