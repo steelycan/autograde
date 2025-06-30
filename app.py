@@ -12,7 +12,11 @@ domain = st.secrets["AUTH0_DOMAIN"]
 from streamlit_auth0 import login_button
 
 # --- Login ---
-user_info = login_button(client_id=client_id, domain=domain)
+user_info = login_button(
+    client_id=client_id,
+    domain=domain,
+    return_user_info=True 
+)
 
 if user_info:
     with st.sidebar:
