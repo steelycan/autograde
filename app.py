@@ -11,8 +11,7 @@ domain = st.secrets["AUTH0_DOMAIN"]
 # Login with Google (Auth0)
 user_info = login_button(
     client_id=client_id,
-    domain=domain,
-    redirect_uri="https://autograde-xovtc2qw9o9vygb4owtrbm.streamlit.app/"
+    domain=domain
 )
 
 st.set_page_config(page_title="AutoGrade (Groq)", layout="centered")
