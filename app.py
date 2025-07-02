@@ -1,15 +1,15 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import json
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from streamlit_auth0 import login_button
 from langchain.chat_models import init_chat_model
 
-# Auth0 Credentials
+# Auth0 credentials
 client_id = st.secrets["AUTH0_CLIENT_ID"]
 domain = st.secrets["AUTH0_DOMAIN"]
-
-# Login with Google (Auth0)
-from streamlit_auth0 import login_button
 
 # Login
 user_info = login_button(client_id=client_id, domain=domain)
@@ -29,9 +29,18 @@ else:
     st.warning("Please log in with Google to continue.")
     st.stop()
 
+# Google Sheets Authentication
+creds_dict = st.secrets["gcp_service_account"]
+creds_json = json.loads(json.dumps(creds_dict))  # convert TOML -> dict -> JSON
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
+client = gspread.authorize(creds)
+sheet = client.open("AssignmentGradingHistory").sheet1  # make sure this sheet exists
+
+# Load model
 model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
-# Prompt Template
+# Prompt template
 prompt_template = """
 You are an expert assignment grader.
 
@@ -89,7 +98,7 @@ Evaluate the StudentAnswer compared to the IdealAnswer using the rubric below.
 - **Structure & Coherence**: <explanation>
 """
 
-# Grading Form 
+# Grading form
 with st.form("grading_form"):
     question = st.text_area("Enter the question")
     ideal_answer = st.text_area("Enter the ideal answer")
@@ -97,11 +106,11 @@ with st.form("grading_form"):
     grading_style = st.selectbox("Select grading style", ["Balanced", "Strict", "Lenient"])
     submitted = st.form_submit_button("Grade Answer")
 
-# Session History
+# Session history
 if "history" not in st.session_state:
     st.session_state.history = []
 
-# Grading Logic
+# Grading logic
 if submitted:
     if question and ideal_answer and student_answer:
         with st.spinner("Grading in progress..."):
@@ -124,6 +133,15 @@ if submitted:
                 "evaluation": evaluation.strip()
             })
 
+            # Log centrally to Google Sheet
+            sheet.append_row([
+                user_info["email"],
+                timestamp,
+                question.strip(),
+                student_answer.strip(),
+                evaluation.strip()
+            ])
+
             st.success("Grading completed.")
 
             if "## Marks:" in evaluation and "## Justification:" in evaluation:
@@ -141,9 +159,9 @@ if submitted:
     else:
         st.warning("Please fill in all fields.")
 
-# History + CSV Export
+# Show previous evaluations from session
 if st.session_state.history:
-    with st.expander("Previous Evaluations"):
+    with st.expander("Your Current Session Evaluations"):
         for i, entry in enumerate(st.session_state.history[::-1], 1):
             st.markdown(f"### Attempt #{len(st.session_state.history) - i + 1}")
             st.markdown(f"**User**: {entry['user']}")
@@ -154,4 +172,14 @@ if st.session_state.history:
             st.markdown("---")
 
     df = pd.DataFrame(st.session_state.history)
-    st.download_button("Download Grading History", df.to_csv(index=False).encode(), "grading_history.csv", "text/csv")
+    st.download_button("Download Current Session", df.to_csv(index=False).encode(), "grading_session.csv", "text/csv")
+
+# Global history from Google Sheets
+if st.checkbox("Show All Grading History (from Google Sheet)"):
+    try:
+        records = sheet.get_all_records()
+        df_all = pd.DataFrame(records)
+        st.dataframe(df_all)
+        st.download_button("Download All Grading History", df_all.to_csv(index=False).encode(), "grading_all_users.csv", "text/csv")
+    except Exception as e:
+        st.error(f"Error loading sheet: {e}")
