@@ -31,9 +31,7 @@ else:
 
 # Google Sheets Authentication
 creds_dict = st.secrets["gcp_service_account"]
-creds_json = json.loads(json.dumps(creds_dict))  # convert TOML -> dict -> JSON
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(creds_dict), scope)
 client = gspread.authorize(creds)
 sheet = client.open("AssignmentGradingHistory").sheet1  # make sure this sheet exists
 
