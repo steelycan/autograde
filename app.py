@@ -31,9 +31,10 @@ else:
 
 # Google Sheets Authentication
 creds_dict = st.secrets["gcp_service_account"]
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(creds_dict), scope)
 client = gspread.authorize(creds)
-sheet = client.open("AssignmentGradingHistory").sheet1  # make sure this sheet exists
+sheet = client.open("sheet = client.open("autograde_logs").sheet1
 
 # Load model
 model = init_chat_model("llama3-8b-8192", model_provider="groq")
