@@ -35,14 +35,17 @@ scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(creds_dict), scope)
 client = gspread.authorize(creds)
 sheet = client.open("autograde_logs").sheet1
-if not sheet.row_values(1):  # If row 1 is empty
+
+# Ensure headers exist
+if not sheet.row_values(1):
     sheet.insert_row(
         ["User", "DateTime", "Question", "StudentAnswer", "Evaluation", "Feedback"], 1
     )
+
 # Load model
 model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
-# Prompt template with grading behavior definitions
+# Prompt template with grading style instructions
 prompt_template = """
 You are an expert assignment grader.
 
@@ -113,7 +116,7 @@ with st.form("grading_form"):
     grading_style = st.selectbox("Select grading style", ["Balanced", "Strict", "Lenient"])
     submitted = st.form_submit_button("Grade Answer")
 
-# Session state init
+# Session history init
 if "history" not in st.session_state:
     st.session_state.history = []
 
@@ -131,13 +134,14 @@ if submitted:
             evaluation = response.content
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+            # Save raw evaluation
             st.session_state.history.append({
                 "user": user_info["email"],
                 "timestamp": timestamp,
                 "question": question.strip(),
                 "student_answer": student_answer.strip(),
                 "evaluation": evaluation.strip(),
-                "feedback": "" 
+                "feedback": ""  # to be filled
             })
 
             st.session_state.last_eval = {
@@ -153,7 +157,7 @@ if submitted:
     else:
         st.warning("Please fill in all fields.")
 
-# Show evaluation and ask for feedback
+# Show grading result and ask for feedback
 if st.session_state.get("just_graded", False):
     evaluation = st.session_state.last_eval["evaluation"]
 
@@ -173,14 +177,19 @@ if st.session_state.get("just_graded", False):
     feedback = st.selectbox("Feedback (Are you satisfied with the evaluation?)", ["Yes", "No"])
     if st.button("Submit Feedback"):
         st.session_state.history[-1]["feedback"] = feedback
+
+        # Cleaned single-line version for Sheets
+        cleaned_eval = st.session_state.last_eval["evaluation"].replace("\n", " ⏎ ")
+
         sheet.append_row([
             st.session_state.last_eval["email"],
             st.session_state.last_eval["timestamp"],
             st.session_state.last_eval["question"],
             st.session_state.last_eval["student_answer"],
-            st.session_state.last_eval["evaluation"],
+            cleaned_eval,
             feedback
         ])
+
         st.success("Feedback recorded.")
         st.session_state.just_graded = False
 
