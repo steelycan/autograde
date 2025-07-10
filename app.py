@@ -103,7 +103,6 @@ with st.form("grading_form"):
     ideal_answer = st.text_area("Enter the ideal answer")
     student_answer = st.text_area("Enter the student's answer")
     grading_style = st.selectbox("Select grading style", ["Balanced", "Strict", "Lenient"])
-    feedback = st.selectbox("Feedback (Are you satisfied with the evaluation?)", ["Yes", "No"])
     submitted = st.form_submit_button("Grade Answer")
 
 # Session history
@@ -124,25 +123,15 @@ if submitted:
             evaluation = response.content
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # Save to session history
+            # Save to session history with empty feedback initially
             st.session_state.history.append({
                 "user": user_info["email"],
                 "timestamp": timestamp,
                 "question": question.strip(),
                 "student_answer": student_answer.strip(),
                 "evaluation": evaluation.strip(),
-                "feedback": feedback
+                "feedback": ""  # will be filled after grading
             })
-
-            # Log centrally to Google Sheet
-            sheet.append_row([
-                user_info["email"],
-                timestamp,
-                question.strip(),
-                student_answer.strip(),
-                evaluation.strip(),
-                feedback
-            ])
 
             st.success("Grading completed.")
 
@@ -158,6 +147,20 @@ if submitted:
             else:
                 st.warning("Unexpected format. Full response below:")
                 st.markdown(evaluation)
+
+            # Ask for feedback now
+            feedback = st.selectbox("Feedback (Are you satisfied with the evaluation?)", ["Yes", "No"])
+            if st.button("Submit Feedback"):
+                st.session_state.history[-1]["feedback"] = feedback
+                sheet.append_row([
+                    user_info["email"],
+                    timestamp,
+                    question.strip(),
+                    student_answer.strip(),
+                    evaluation.strip(),
+                    feedback
+                ])
+                st.success("Feedback recorded.")
     else:
         st.warning("Please fill in all fields.")
 
@@ -171,7 +174,8 @@ if st.session_state.history:
             st.markdown(f"**Question**: {entry['question']}")
             st.markdown(f"**Student Answer**: {entry['student_answer']}")
             st.markdown(entry["evaluation"])
-            st.markdown(f"**Feedback**: {entry['feedback']}")
+            if entry["feedback"]:
+                st.markdown(f"**Feedback**: {entry['feedback']}")
             st.markdown("---")
 
     df = pd.DataFrame(st.session_state.history)
