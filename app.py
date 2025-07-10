@@ -103,6 +103,7 @@ with st.form("grading_form"):
     ideal_answer = st.text_area("Enter the ideal answer")
     student_answer = st.text_area("Enter the student's answer")
     grading_style = st.selectbox("Select grading style", ["Balanced", "Strict", "Lenient"])
+    feedback = st.selectbox("Feedback (Are you satisfied with the evaluation?)", ["Yes", "No"])
     submitted = st.form_submit_button("Grade Answer")
 
 # Session history
@@ -129,7 +130,8 @@ if submitted:
                 "timestamp": timestamp,
                 "question": question.strip(),
                 "student_answer": student_answer.strip(),
-                "evaluation": evaluation.strip()
+                "evaluation": evaluation.strip(),
+                "feedback": feedback
             })
 
             # Log centrally to Google Sheet
@@ -138,7 +140,8 @@ if submitted:
                 timestamp,
                 question.strip(),
                 student_answer.strip(),
-                evaluation.strip()
+                evaluation.strip(),
+                feedback
             ])
 
             st.success("Grading completed.")
@@ -168,6 +171,7 @@ if st.session_state.history:
             st.markdown(f"**Question**: {entry['question']}")
             st.markdown(f"**Student Answer**: {entry['student_answer']}")
             st.markdown(entry["evaluation"])
+            st.markdown(f"**Feedback**: {entry['feedback']}")
             st.markdown("---")
 
     df = pd.DataFrame(st.session_state.history)
