@@ -35,7 +35,10 @@ scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(creds_dict), scope)
 client = gspread.authorize(creds)
 sheet = client.open("autograde_logs").sheet1
-
+if not sheet.row_values(1):  # If row 1 is empty
+    sheet.insert_row(
+        ["User", "DateTime", "Question", "StudentAnswer", "Evaluation", "Feedback"], 1
+    )
 # Load model
 model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
