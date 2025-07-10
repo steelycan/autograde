@@ -39,13 +39,18 @@ sheet = client.open("autograde_logs").sheet1
 # Load model
 model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
-# Prompt template
+# Prompt template with grading behavior definitions
 prompt_template = """
 You are an expert assignment grader.
 
 Evaluate the StudentAnswer compared to the IdealAnswer using the rubric below.
 
 ## Grading Style: {grading_style}
+
+Grading behavior based on style:
+- **Strict**: Award marks only when criteria are fully met. Be conservative and critical.
+- **Balanced**: Fairly reward effort and partial correctness while maintaining academic standards.
+- **Lenient**: Be generous. Prioritize student effort and intent. Give benefit of doubt for minor issues.
 
 ### Rubric (Total: 10 Marks)
 
@@ -105,7 +110,7 @@ with st.form("grading_form"):
     grading_style = st.selectbox("Select grading style", ["Balanced", "Strict", "Lenient"])
     submitted = st.form_submit_button("Grade Answer")
 
-# Session history
+# Session state init
 if "history" not in st.session_state:
     st.session_state.history = []
 
@@ -123,48 +128,60 @@ if submitted:
             evaluation = response.content
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # Save to session history with empty feedback initially
             st.session_state.history.append({
                 "user": user_info["email"],
                 "timestamp": timestamp,
                 "question": question.strip(),
                 "student_answer": student_answer.strip(),
                 "evaluation": evaluation.strip(),
-                "feedback": ""  # will be filled after grading
+                "feedback": "" 
             })
 
+            st.session_state.last_eval = {
+                "email": user_info["email"],
+                "timestamp": timestamp,
+                "question": question.strip(),
+                "student_answer": student_answer.strip(),
+                "evaluation": evaluation.strip()
+            }
+
+            st.session_state.just_graded = True
             st.success("Grading completed.")
-
-            if "## Marks:" in evaluation and "## Justification:" in evaluation:
-                marks_section = evaluation.split("## Justification:")[0].replace("## Marks:", "").strip()
-                explanation_section = evaluation.split("## Justification:")[1].strip()
-
-                st.subheader("Marks Breakdown")
-                st.code(marks_section, language="markdown")
-
-                st.subheader("Justification")
-                st.markdown(explanation_section)
-            else:
-                st.warning("Unexpected format. Full response below:")
-                st.markdown(evaluation)
-
-            # Ask for feedback now
-            feedback = st.selectbox("Feedback (Are you satisfied with the evaluation?)", ["Yes", "No"])
-            if st.button("Submit Feedback"):
-                st.session_state.history[-1]["feedback"] = feedback
-                sheet.append_row([
-                    user_info["email"],
-                    timestamp,
-                    question.strip(),
-                    student_answer.strip(),
-                    evaluation.strip(),
-                    feedback
-                ])
-                st.success("Feedback recorded.")
     else:
         st.warning("Please fill in all fields.")
 
-# Show previous evaluations from session
+# Show evaluation and ask for feedback
+if st.session_state.get("just_graded", False):
+    evaluation = st.session_state.last_eval["evaluation"]
+
+    if "## Marks:" in evaluation and "## Justification:" in evaluation:
+        marks_section = evaluation.split("## Justification:")[0].replace("## Marks:", "").strip()
+        explanation_section = evaluation.split("## Justification:")[1].strip()
+
+        st.subheader("Marks Breakdown")
+        st.code(marks_section, language="markdown")
+
+        st.subheader("Justification")
+        st.markdown(explanation_section)
+    else:
+        st.warning("Unexpected format. Full response below:")
+        st.markdown(evaluation)
+
+    feedback = st.selectbox("Feedback (Are you satisfied with the evaluation?)", ["Yes", "No"])
+    if st.button("Submit Feedback"):
+        st.session_state.history[-1]["feedback"] = feedback
+        sheet.append_row([
+            st.session_state.last_eval["email"],
+            st.session_state.last_eval["timestamp"],
+            st.session_state.last_eval["question"],
+            st.session_state.last_eval["student_answer"],
+            st.session_state.last_eval["evaluation"],
+            feedback
+        ])
+        st.success("Feedback recorded.")
+        st.session_state.just_graded = False
+
+# Show current session evaluations
 if st.session_state.history:
     with st.expander("Your Current Session Evaluations"):
         for i, entry in enumerate(st.session_state.history[::-1], 1):
@@ -181,7 +198,7 @@ if st.session_state.history:
     df = pd.DataFrame(st.session_state.history)
     st.download_button("Download Current Session", df.to_csv(index=False).encode(), "grading_session.csv", "text/csv")
 
-# Global history from Google Sheets
+# Global grading history
 if st.checkbox("Show All Grading History (from Google Sheet)"):
     try:
         records = sheet.get_all_records()
