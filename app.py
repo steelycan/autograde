@@ -28,7 +28,7 @@ if user_info:
             st.session_state.clear()
             st.rerun() # Rerun to clear the session and show login button
 
-    st.title("AI Assignment Grader")
+    st.title("Assignment Grader")
     st.success(f"Welcome, {user_info['name']}! Please provide assignment details below.")
 else:
     st.warning("Please log in with Google to continue using the Assignment Grader.")
