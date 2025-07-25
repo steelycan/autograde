@@ -6,7 +6,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from streamlit_auth0 import login_button
 from langchain.chat_models import init_chat_model
-import os # Import os for environment variables
+import os
 
 # Auth0 credentials
 client_id = st.secrets["AUTH0_CLIENT_ID"]
@@ -15,7 +15,6 @@ domain = st.secrets["AUTH0_DOMAIN"]
 # Login via Auth0
 user_info = login_button(client_id=client_id, domain=domain)
 
-# Display user info and sign out button if logged in
 if user_info:
     with st.sidebar:
         st.markdown("**Signed in as:**")
@@ -25,7 +24,7 @@ if user_info:
             st.session_state.clear()
             st.rerun()
 
-    st.title("AI Assignment Grader")
+    st.title("Assignment Grader")
     st.success(f"Welcome, {user_info['name']}! Please provide assignment details below.")
 else:
     st.warning("Please log in with Google to continue using the Assignment Grader.")
@@ -52,7 +51,6 @@ else:
         if header not in current_headers:
             st.warning(f"The column '{header}' is missing in your 'autograde_logs' Google Sheet. Please add it manually for full logging functionality.")
 
-# Set Groq API Key from Streamlit secrets as an environment variable
 if "GROQ_API_KEY" in st.secrets:
     os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
 else:
@@ -236,9 +234,17 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
     evaluation = st.session_state.last_eval["evaluation"]
 
     st.subheader("Evaluation Result")
-    if "## Marks:" in evaluation and "## Justification:" in evaluation:
-        marks_section = evaluation.split("## Justification:")[0].replace("## Marks:", "").strip()
-        explanation_section = evaluation.split("## Justification:")[1].strip()
+    # More robust parsing for evaluation content
+    if "## Justification:" in evaluation:
+        parts = evaluation.split("## Justification:", 1) # Split only on the first occurrence
+        marks_section_raw = parts[0].strip()
+        explanation_section = parts[1].strip()
+
+        # Remove "## Marks:" if it exists in the raw marks section
+        if marks_section_raw.startswith("## Marks:"):
+            marks_section = marks_section_raw[len("## Marks:"):].strip()
+        else:
+            marks_section = marks_section_raw # Use as is if header format differs slightly
 
         st.markdown("---")
         st.subheader("Marks Breakdown")
@@ -273,13 +279,11 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
 
     # Logic to process feedback and trigger prompt improvement
     if submit_feedback_button:
-        # --- FIX START ---
         # If user is not satisfied but didn't provide detailed feedback, warn them
         if satisfaction == "No" and not detailed_feedback_text.strip():
             st.warning("Please provide detailed feedback if you are not satisfied, so the AI can learn and improve.")
             st.session_state.just_graded = True # Keep the feedback form visible
             st.stop() # Stop execution here to prevent logging and prompt refinement without feedback
-        # --- FIX END ---
 
         st.session_state.history[-1]["feedback"] = satisfaction
         st.session_state.history[-1]["detailed_feedback"] = detailed_feedback_text.strip()
@@ -306,7 +310,7 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
                         st.session_state.current_adaptive_instruction = ""
                 except Exception as e:
                     st.error(f"Error during prompt refinement: {e}. The grading prompt could not be improved at this time.")
-                    st.session_state.current_adaptive_instruction = ""
+                    st.session_session.current_adaptive_instruction = ""
         else:
             st.info("Feedback submitted. No prompt improvement needed for positive feedback.")
             st.session_state.current_adaptive_instruction = ""
