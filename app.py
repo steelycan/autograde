@@ -8,10 +8,6 @@ from streamlit_auth0 import login_button
 from langchain.chat_models import init_chat_model
 
 # Auth0 credentials
-# Ensure these are set in your Streamlit secrets (e.g., .streamlit/secrets.toml)
-# [AUTH0]
-# CLIENT_ID = "your_auth0_client_id"
-# DOMAIN = "your_auth0_domain"
 client_id = st.secrets["AUTH0_CLIENT_ID"]
 domain = st.secrets["AUTH0_DOMAIN"]
 
@@ -26,62 +22,43 @@ if user_info:
         st.markdown(f"**Email:** {user_info['email']}")
         if st.button("Sign Out"):
             st.session_state.clear()
-            st.rerun() # Rerun to clear the session and show login button
+            st.rerun()
 
     st.title("Assignment Grader")
     st.success(f"Welcome, {user_info['name']}! Please provide assignment details below.")
 else:
     st.warning("Please log in with Google to continue using the Assignment Grader.")
-    st.stop() # Stop execution until the user logs in
+    st.stop()
 
 # Google Sheets Authentication
-# Ensure 'gcp_service_account' is set in your Streamlit secrets
-# [gcp_service_account]
-# type = "service_account"
-# project_id = "your-project-id"
-# private_key_id = "your-private-key-id"
-# private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-# client_email = "your-service-account-email@your-project-id.iam.gserviceaccount.com"
-# client_id = "your-client-id"
-# auth_uri = "https://accounts.google.com/o/oauth2/auth"
-# token_uri = "https://oauth2.googleapis.com/token"
-# auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-# client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/..."
 creds_dict = st.secrets["gcp_service_account"]
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(creds_dict), scope)
 
 try:
     client = gspread.authorize(creds)
-    # Open the main grading log sheet
     sheet = client.open("autograde_logs").sheet1
 except Exception as e:
     st.error(f"Error connecting to Google Sheets: {e}. Please ensure your 'gcp_service_account' secrets are correctly configured and the service account has access to the 'autograde_logs' spreadsheet.")
     st.stop()
 
-# Ensure headers exist in the Google Sheet for proper logging
 expected_headers = ["User", "DateTime", "Question", "StudentAnswer", "Evaluation", "Feedback", "DetailedFeedback", "GeneratedInstruction"]
 current_headers = sheet.row_values(1)
 if not current_headers:
-    # If sheet is empty, insert all expected headers
     sheet.insert_row(expected_headers, 1)
 else:
-    # Check for missing headers and warn the user
     for header in expected_headers:
         if header not in current_headers:
             st.warning(f"The column '{header}' is missing in your 'autograde_logs' Google Sheet. Please add it manually for full logging functionality.")
 
 # Initialize the grading LLM
-# This model will perform the actual assignment grading.
 grade_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
 # Initialize the prompt refinement LLM
-# This model will generate new instructions based on user feedback to improve the grading prompt.
 refine_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
 
-# Base prompt template for the assignment grader
-# This template defines the core instructions and rubric for grading.
+# Prompt template for the assignment grader
 base_prompt_template = """
 You are an expert assignment grader.
 
@@ -145,7 +122,6 @@ Grading behavior based on style:
 """
 
 # Prompt template for the self-improvement (refining instructions) LLM
-# This prompt guides the AI to generate new, actionable instructions for the main grading prompt.
 refine_prompt_template = """
 You are an expert AI assistant that helps refine grading instructions.
 A user has provided feedback on an automated assignment grading. Your task is to generate *new, concise, and generalizable instructions* that can be prepended to the main grading prompt to improve its accuracy based on the user's feedback.
@@ -231,12 +207,12 @@ if submitted:
                     "user": user_info["email"],
                     "timestamp": timestamp,
                     "question": question.strip(),
-                    "ideal_answer": ideal_answer.strip(), # Stored for context in feedback loop
+                    "ideal_answer": ideal_answer.strip(), 
                     "student_answer": student_answer.strip(),
                     "evaluation": evaluation.strip(),
-                    "feedback": "",  # To be filled by user feedback
-                    "detailed_feedback": "", # To be filled by user feedback
-                    "generated_instruction": "" # To be filled if self-improvement occurs
+                    "feedback": "",  
+                    "detailed_feedback": "", 
+                    "generated_instruction": "" 
                 })
 
                 # Store the last evaluation details for display and feedback processing
@@ -249,20 +225,19 @@ if submitted:
                     "evaluation": evaluation.strip()
                 }
 
-                st.session_state.just_graded = True # Set flag to display feedback form
+                st.session_state.just_graded = True
                 st.success("Grading completed successfully!")
             except Exception as e:
                 st.error(f"Error during AI grading: {e}. Please try again.")
-                st.session_state.just_graded = False # Reset flag on error
+                st.session_state.just_graded = False
     else:
         st.warning("Please ensure all fields (Question, Ideal Answer, Student Answer) are filled before grading.")
 
 # Display Grading Result and Feedback Form
-# This section is displayed only after an assignment has been graded.
 if st.session_state.get("just_graded", False) and st.session_state.last_eval:
     evaluation = st.session_state.last_eval["evaluation"]
 
-    st.subheader("AI's Evaluation Result")
+    st.subheader("Evaluation Result")
     # Parse the evaluation content into Marks and Justification sections
     if "## Marks:" in evaluation and "## Justification:" in evaluation:
         marks_section = evaluation.split("## Justification:")[0].replace("## Marks:", "").strip()
@@ -281,7 +256,6 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
         st.markdown("---")
 
     # Feedback Form for Self-Improvement
-    # This form collects user satisfaction and detailed feedback to refine the grading prompt.
     with st.form("feedback_form"):
         st.subheader("Provide Feedback on this Evaluation")
         satisfaction = st.radio(
@@ -298,20 +272,16 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
                 height=100
             )
         
-        # Submit button for the feedback form
         submit_feedback_button = st.form_submit_button("Submit Feedback")
 
     # Logic to process feedback and trigger prompt improvement
     if submit_feedback_button:
-        # Update the last entry in the session history with feedback details
         st.session_state.history[-1]["feedback"] = satisfaction
         st.session_state.history[-1]["detailed_feedback"] = detailed_feedback_text
 
         generated_instruction = ""
-        # If user is not satisfied and provided detailed feedback, trigger prompt refinement
         if satisfaction == "No" and detailed_feedback_text:
             with st.spinner("Analyzing feedback and generating prompt improvement..."):
-                # Prepare prompt for the refinement LLM
                 refine_prompt = refine_prompt_template.format(
                     question=st.session_state.last_eval["question"],
                     ideal_answer=st.session_state.last_eval["ideal_answer"],
@@ -329,21 +299,19 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
                         st.info(f"**New Adaptive Instruction Generated:** '{generated_instruction}'\n\nThis instruction will be applied to all subsequent gradings in this session to improve accuracy.")
                     else:
                         st.info("No specific instruction generated for improvement based on your feedback, or feedback indicated no improvement needed.")
-                        st.session_state.current_adaptive_instruction = "" # Clear if no improvement needed
+                        st.session_state.current_adaptive_instruction = ""
                 except Exception as e:
                     st.error(f"Error during prompt refinement: {e}. The grading prompt could not be improved at this time.")
-                    st.session_state.current_adaptive_instruction = "" # Ensure it's cleared on error
+                    st.session_state.current_adaptive_instruction = ""
         else:
             st.info("Feedback submitted. No prompt improvement needed for positive feedback or empty detailed feedback.")
-            st.session_state.current_adaptive_instruction = "" # Clear if positive feedback or no detailed feedback
+            st.session_state.current_adaptive_instruction = ""
 
-        # Update the generated instruction in the session history for logging
+
         st.session_state.history[-1]["generated_instruction"] = generated_instruction
 
-        # Prepare evaluation content for Google Sheets (replace newlines for single cell)
         cleaned_eval = st.session_state.last_eval["evaluation"].replace("\n", " ⏎ ")
 
-        # Prepare the row to append to the Google Sheet
         row_to_append = [
             st.session_state.last_eval["email"],
             st.session_state.last_eval["timestamp"],
@@ -362,10 +330,9 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
         except Exception as e:
             st.error(f"Error appending data to Google Sheet: {e}. Please check permissions and sheet name.")
 
-        st.session_state.just_graded = False # Reset flag to hide feedback form for next grading cycle
+        st.session_state.just_graded = False
 
 # Display Current Session Evaluations
-# This section shows a history of all gradings performed in the current browser session.
 if st.session_state.history:
     st.markdown("---")
     with st.expander("View Your Current Session Evaluations"):
@@ -385,7 +352,6 @@ if st.session_state.history:
                 st.markdown(f"**Generated Instruction:** {entry['generated_instruction']}")
             st.markdown("---")
 
-    # Download button for current session data
     df = pd.DataFrame(st.session_state.history)
     st.download_button(
         "Download Current Session Data (CSV)",
@@ -396,16 +362,14 @@ if st.session_state.history:
     )
 
 # Display Global Grading History from Google Sheet
-# This allows users to view all historical grading data stored in the Google Sheet.
 st.markdown("---")
 if st.checkbox("Show All Grading History (from Google Sheet)"):
     try:
         with st.spinner("Loading all grading history from Google Sheet..."):
-            records = sheet.get_all_records() # Fetch all records from the sheet
+            records = sheet.get_all_records() 
             df_all = pd.DataFrame(records)
-            st.dataframe(df_all) # Display as a Streamlit dataframe
+            st.dataframe(df_all) 
 
-        # Download button for all historical data
         st.download_button(
             "Download All Grading History (CSV)",
             df_all.to_csv(index=False).encode("utf-8"),
