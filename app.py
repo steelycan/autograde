@@ -235,7 +235,7 @@ if submit_button:
 if st.session_state.get("just_graded", False) and st.session_state.last_eval:
     evaluation = st.session_state.last_eval["evaluation"]
 
-    st.subheader("AI's Evaluation Result")
+    st.subheader("Evaluation Result")
     if "## Marks:" in evaluation and "## Justification:" in evaluation:
         marks_section = evaluation.split("## Justification:")[0].replace("## Marks:", "").strip()
         explanation_section = evaluation.split("## Justification:")[1].strip()
