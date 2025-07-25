@@ -6,6 +6,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from streamlit_auth0 import login_button
 from langchain.chat_models import init_chat_model
+import os # Import os for environment variables
 
 # Auth0 credentials
 client_id = st.secrets["AUTH0_CLIENT_ID"]
@@ -24,7 +25,7 @@ if user_info:
             st.session_state.clear()
             st.rerun()
 
-    st.title("Assignment Grader")
+    st.title("AI Assignment Grader")
     st.success(f"Welcome, {user_info['name']}! Please provide assignment details below.")
 else:
     st.warning("Please log in with Google to continue using the Assignment Grader.")
@@ -50,6 +51,13 @@ else:
     for header in expected_headers:
         if header not in current_headers:
             st.warning(f"The column '{header}' is missing in your 'autograde_logs' Google Sheet. Please add it manually for full logging functionality.")
+
+# Set Groq API Key from Streamlit secrets as an environment variable
+if "GROQ_API_KEY" in st.secrets:
+    os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+else:
+    st.error("Groq API key not found in Streamlit secrets. Please add it to .streamlit/secrets.toml (e.g., GROQ_API_KEY = 'your_key_here')")
+    st.stop()
 
 # Initialize the grading LLM
 grade_model = init_chat_model("llama3-8b-8192", model_provider="groq")
@@ -157,19 +165,15 @@ Another example:
 
 # Session state initialization for persistent data within the session
 if "history" not in st.session_state:
-    st.session_state.history = [] # Stores a log of all evaluations in the current session
+    st.session_state.history = []
 if "last_eval" not in st.session_state:
-    st.session_state.last_eval = None # Stores the details of the most recent evaluation
+    st.session_state.last_eval = None
 if "just_graded" not in st.session_state:
-    st.session_state.just_graded = False # Flag to control display of feedback form
+    st.session_state.just_graded = False
 if "current_adaptive_instruction" not in st.session_state:
-    # This variable stores the latest generated adaptive instruction.
-    # It will be prepended to the grading prompt for subsequent gradings in the session.
-    # For persistence across sessions, this would need to be loaded from a persistent store (e.g., another Google Sheet cell).
     st.session_state.current_adaptive_instruction = ""
 
 # Assignment Grading Form
-# This form allows the user to input the question, ideal answer, and student's answer.
 with st.form("grading_form"):
     st.subheader("Assignment Details")
     question = st.text_area("Enter the question:", key="question_input", height=100)
@@ -177,15 +181,12 @@ with st.form("grading_form"):
     student_answer = st.text_area("Enter the student's answer:", key="student_answer_input", height=150)
     grading_style = st.selectbox("Select grading style:", ["Balanced", "Strict", "Lenient"], key="grading_style_select")
     
-    # Submit button for the grading form
-    submitted = st.form_submit_button("Grade Answer")
+    submit_button = st.form_submit_button("Grade Answer")
 
-# Grading Logic: Executed when the "Grade Answer" button is pressed
-if submitted:
+# Grading Logic
+if submit_button:
     if question and ideal_answer and student_answer:
         with st.spinner("Grading in progress... Please wait."):
-            # Construct the full prompt for the grading LLM.
-            # Any adaptive instructions generated from previous feedback will be prepended.
             full_grading_prompt = ""
             if st.session_state.current_adaptive_instruction:
                 full_grading_prompt += f"**IMPORTANT ADAPTIVE INSTRUCTION:** {st.session_state.current_adaptive_instruction}\n\n"
@@ -196,26 +197,23 @@ if submitted:
                 grading_style=grading_style
             )
 
-            # Invoke the grading LLM to get the evaluation
             try:
                 response = grade_model.invoke(full_grading_prompt)
                 evaluation = response.content
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                # Store the current evaluation details in session history
                 st.session_state.history.append({
                     "user": user_info["email"],
                     "timestamp": timestamp,
                     "question": question.strip(),
-                    "ideal_answer": ideal_answer.strip(), 
+                    "ideal_answer": ideal_answer.strip(),
                     "student_answer": student_answer.strip(),
                     "evaluation": evaluation.strip(),
-                    "feedback": "",  
-                    "detailed_feedback": "", 
-                    "generated_instruction": "" 
+                    "feedback": "",
+                    "detailed_feedback": "",
+                    "generated_instruction": ""
                 })
 
-                # Store the last evaluation details for display and feedback processing
                 st.session_state.last_eval = {
                     "email": user_info["email"],
                     "timestamp": timestamp,
@@ -237,8 +235,7 @@ if submitted:
 if st.session_state.get("just_graded", False) and st.session_state.last_eval:
     evaluation = st.session_state.last_eval["evaluation"]
 
-    st.subheader("Evaluation Result")
-    # Parse the evaluation content into Marks and Justification sections
+    st.subheader("AI's Evaluation Result")
     if "## Marks:" in evaluation and "## Justification:" in evaluation:
         marks_section = evaluation.split("## Justification:")[0].replace("## Marks:", "").strip()
         explanation_section = evaluation.split("## Justification:")[1].strip()
@@ -276,24 +273,31 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
 
     # Logic to process feedback and trigger prompt improvement
     if submit_feedback_button:
+        # --- FIX START ---
+        # If user is not satisfied but didn't provide detailed feedback, warn them
+        if satisfaction == "No" and not detailed_feedback_text.strip():
+            st.warning("Please provide detailed feedback if you are not satisfied, so the AI can learn and improve.")
+            st.session_state.just_graded = True # Keep the feedback form visible
+            st.stop() # Stop execution here to prevent logging and prompt refinement without feedback
+        # --- FIX END ---
+
         st.session_state.history[-1]["feedback"] = satisfaction
-        st.session_state.history[-1]["detailed_feedback"] = detailed_feedback_text
+        st.session_state.history[-1]["detailed_feedback"] = detailed_feedback_text.strip()
 
         generated_instruction = ""
-        if satisfaction == "No" and detailed_feedback_text:
+        if satisfaction == "No" and detailed_feedback_text.strip():
             with st.spinner("Analyzing feedback and generating prompt improvement..."):
                 refine_prompt = refine_prompt_template.format(
                     question=st.session_state.last_eval["question"],
                     ideal_answer=st.session_state.last_eval["ideal_answer"],
                     student_answer=st.session_state.last_eval["student_answer"],
                     ai_evaluation=st.session_state.last_eval["evaluation"],
-                    detailed_feedback=detailed_feedback_text
+                    detailed_feedback=detailed_feedback_text.strip()
                 )
                 try:
                     refine_response = refine_model.invoke(refine_prompt)
                     generated_instruction = refine_response.content.strip()
 
-                    # Update the current adaptive instruction if a new one is generated
                     if generated_instruction and generated_instruction != "NO_IMPROVEMENT_NEEDED":
                         st.session_state.current_adaptive_instruction = generated_instruction
                         st.info(f"**New Adaptive Instruction Generated:** '{generated_instruction}'\n\nThis instruction will be applied to all subsequent gradings in this session to improve accuracy.")
@@ -304,9 +308,8 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
                     st.error(f"Error during prompt refinement: {e}. The grading prompt could not be improved at this time.")
                     st.session_state.current_adaptive_instruction = ""
         else:
-            st.info("Feedback submitted. No prompt improvement needed for positive feedback or empty detailed feedback.")
+            st.info("Feedback submitted. No prompt improvement needed for positive feedback.")
             st.session_state.current_adaptive_instruction = ""
-
 
         st.session_state.history[-1]["generated_instruction"] = generated_instruction
 
@@ -319,11 +322,10 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
             st.session_state.last_eval["student_answer"],
             cleaned_eval,
             satisfaction,
-            detailed_feedback_text,
+            st.session_state.history[-1]["detailed_feedback"],
             generated_instruction
         ]
 
-        # Append the data to the Google Sheet
         try:
             sheet.append_row(row_to_append)
             st.success("Feedback recorded and grading log updated in Google Sheets.")
@@ -336,14 +338,14 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
 if st.session_state.history:
     st.markdown("---")
     with st.expander("View Your Current Session Evaluations"):
-        for i, entry in enumerate(st.session_state.history[::-1], 1): # Iterate in reverse for most recent first
+        for i, entry in enumerate(st.session_state.history[::-1], 1):
             st.markdown(f"### Evaluation #{len(st.session_state.history) - i + 1}")
             st.markdown(f"**User:** {entry['user']}")
             st.markdown(f"**Time:** {entry['timestamp']}")
             st.markdown(f"**Question:** {entry['question']}")
             st.markdown(f"**Student Answer:** {entry['student_answer']}")
             st.markdown("**AI Evaluation:**")
-            st.markdown(entry["evaluation"]) # Display original formatted evaluation
+            st.markdown(entry["evaluation"])
             if entry["feedback"]:
                 st.markdown(f"**User Feedback:** {entry['feedback']}")
             if entry["detailed_feedback"]:
@@ -366,9 +368,9 @@ st.markdown("---")
 if st.checkbox("Show All Grading History (from Google Sheet)"):
     try:
         with st.spinner("Loading all grading history from Google Sheet..."):
-            records = sheet.get_all_records() 
+            records = sheet.get_all_records()
             df_all = pd.DataFrame(records)
-            st.dataframe(df_all) 
+            st.dataframe(df_all)
 
         st.download_button(
             "Download All Grading History (CSV)",
