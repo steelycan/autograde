@@ -20,6 +20,8 @@ except Exception:
 
 from langchain.schema import HumanMessage
 import google.generativeai as genai
+from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+from langchain.prompts import ChatPromptTemplate
 # -----------------------------------------------------------------------------
 
 client_id = st.secrets["AUTH0_CLIENT_ID"]
@@ -71,9 +73,9 @@ else:
 grade_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 refine_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
-# ------------------------ Vision model init ------------------------
+# ------------------------ Vision model init (Groq) ------------------------
 GEMINI_AVAILABLE = False
-GEMINI_MODEL_NAME = "gemini-2.5-flash-lite"
+GEMINI_MODEL_NAME = "gemini-1.5-flash"
 if "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"]:
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
@@ -180,6 +182,45 @@ Example of desired output:
 Another example:
 "When evaluating 'Completeness', ensure all sub-parts explicitly mentioned in the question are addressed, even if briefly."
 """
+
+response_schemas = [
+    ResponseSchema(name="content_accuracy", description="Score out of 3 as a number"),
+    ResponseSchema(name="completeness", description="Score out of 2 as a number"),
+    ResponseSchema(name="language_clarity", description="Score out of 2 as a number"),
+    ResponseSchema(name="depth_understanding", description="Score out of 2 as a number"),
+    ResponseSchema(name="structure_coherence", description="Score out of 1 as a number"),
+    ResponseSchema(name="justification", description="Detailed explanation")
+]
+json_output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
+json_format_instructions = json_output_parser.get_format_instructions()
+json_prompt = ChatPromptTemplate.from_template(
+    """
+You are an expert assignment grader.
+
+Evaluate the StudentAnswer compared to the IdealAnswer using the rubric below and the selected grading style.
+
+Rubric:
+- Content Accuracy: 0–3
+- Completeness: 0–2
+- Language & Clarity: 0–2
+- Depth of Understanding: 0–2
+- Structure & Coherence: 0–1
+
+Grading Style: {grading_style}
+
+Question:
+{question}
+
+IdealAnswer:
+{ideal_answer}
+
+StudentAnswer:
+{student_answer}
+
+Return ONLY a JSON object following this schema:
+{format_instructions}
+""".strip()
+)
 
 if "history" not in st.session_state:
     st.session_state.history = []
@@ -338,19 +379,35 @@ if submit_button:
 
             st.session_state.last_image_notes = per_image_notes
 
-            full_grading_prompt = ""
-            if st.session_state.current_adaptive_instruction:
-                full_grading_prompt += f"**IMPORTANT ADAPTIVE INSTRUCTION:** {st.session_state.current_adaptive_instruction}\n\n"
-            full_grading_prompt += base_prompt_template.format(
-                question=question.strip(),
-                ideal_answer=ideal_answer.strip(),
-                student_answer=student_answer_augmented,
-                grading_style=grading_style
-            )
-
             try:
-                response = grade_model.invoke(full_grading_prompt)
-                evaluation = response.content
+                chain = json_prompt | grade_model | json_output_parser
+                parsed = chain.invoke({
+                    "grading_style": grading_style,
+                    "question": question.strip(),
+                    "ideal_answer": ideal_answer.strip(),
+                    "student_answer": student_answer_augmented,
+                    "format_instructions": json_format_instructions,
+                })
+
+                ca = float(parsed.get("content_accuracy", 0))
+                co = float(parsed.get("completeness", 0))
+                lc = float(parsed.get("language_clarity", 0))
+                du = float(parsed.get("depth_understanding", 0))
+                sc = float(parsed.get("structure_coherence", 0))
+                total = ca + co + lc + du + sc
+                just = (parsed.get("justification") or "").strip()
+
+                evaluation = f"""## Marks:
+- Content Accuracy: {ca}/3
+- Completeness: {co}/2
+- Language & Clarity: {lc}/2
+- Depth of Understanding: {du}/2
+- Structure & Coherence: {sc}/1
+- **Total: {total}/10**
+
+## Justification:
+{just}
+""".strip()
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 st.session_state.history.append({
