@@ -12,21 +12,19 @@ import os
 from PIL import Image
 import base64
 
-# Optional OCR
 try:
     import pytesseract
     OCR_AVAILABLE = True
 except Exception:
     OCR_AVAILABLE = False
 
-from langchain.schema import HumanMessage  
+from langchain.schema import HumanMessage
+import google.generativeai as genai
 # -----------------------------------------------------------------------------
 
-# Auth0 credentials
 client_id = st.secrets["AUTH0_CLIENT_ID"]
 domain = st.secrets["AUTH0_DOMAIN"]
 
-# Login via Auth0
 user_info = login_button(client_id=client_id, domain=domain)
 
 if user_info:
@@ -44,7 +42,6 @@ else:
     st.warning("Please log in with Google to continue using the Assignment Grader.")
     st.stop()
 
-# Google Sheets Authentication
 creds_dict = st.secrets["gcp_service_account"]
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(creds_dict), scope)
@@ -71,22 +68,24 @@ else:
     st.error("Groq API key not found in Streamlit secrets. Please add it to .streamlit/secrets.toml (e.g., GROQ_API_KEY = 'your_key_here')")
     st.stop()
 
-# Initialize the grading LLM
 grade_model = init_chat_model("llama3-8b-8192", model_provider="groq")
-
-# Initialize the prompt refinement LLM
 refine_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
-# ------------------------ Vision model init (Groq) ------------------------
-VISION_MODEL_NAME = "llama-3.1-8b-instant"
-try:
-    vision_model = init_chat_model(VISION_MODEL_NAME, model_provider="groq")
-except Exception as e:
-    vision_model = None
-    st.warning(f"Vision model not initialized: {e}. OCR will be used if available.")
+# ------------------------ Vision model init ------------------------
+GEMINI_AVAILABLE = False
+GEMINI_MODEL_NAME = "gemini-2.5-flash-lite"
+if "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"]:
+    try:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        gemini_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+        GEMINI_AVAILABLE = True
+    except Exception as e:
+        gemini_model = None
+        st.warning(f"Vision model not initialized: {e}. OCR will be used if available.")
+else:
+    gemini_model = None
 # ------------------------------------------------------------------------------
 
-# Prompt template for the assignment grader
 base_prompt_template = """
 You are an expert assignment grader.
 
@@ -149,7 +148,6 @@ Grading behavior based on style:
 - **Structure & Coherence**: <explanation>
 """
 
-# Prompt template for the self-improvement (refining instructions) LLM
 refine_prompt_template = """
 You are an expert AI assistant that helps refine grading instructions.
 A user has provided feedback on an automated assignment grading. Your task is to generate *new, concise, and generalizable instructions* that can be prepended to the main grading prompt to improve its accuracy based on the user's feedback.
@@ -183,7 +181,6 @@ Another example:
 "When evaluating 'Completeness', ensure all sub-parts explicitly mentioned in the question are addressed, even if briefly."
 """
 
-# Session state
 if "history" not in st.session_state:
     st.session_state.history = []
 if "last_eval" not in st.session_state:
@@ -195,7 +192,6 @@ if "current_adaptive_instruction" not in st.session_state:
 if "last_image_notes" not in st.session_state:
     st.session_state.last_image_notes = []
 
-# ------------------------ helper functions for image → text ------------------------
 def image_to_base64(file):
     bytes_data = file.read()
     b64 = base64.b64encode(bytes_data).decode("utf-8")
@@ -220,12 +216,36 @@ def ocr_image(file):
         st.warning(f"OCR failed for {file.name}: {e}")
         return ""
 
+def _infer_mime_from_name(name: str) -> str:
+    name = name.lower()
+    if name.endswith(".png"):
+        return "image/png"
+    if name.endswith(".webp"):
+        return "image/webp"
+    if name.endswith(".jpg") or name.endswith(".jpeg"):
+        return "image/jpeg"
+    return "application/octet-stream"
+
+def gemini_analyze_image(file, question: str) -> str:
+    if not GEMINI_AVAILABLE:
+        return ""
+    try:
+        file.seek(0)
+        bytes_data = file.read()
+        mime = _infer_mime_from_name(file.name)
+        prompt = (
+            "You are assisting an assignment grader. Given the teacher's question below, "
+            "extract ONLY content from this image useful for grading the student's answer. "
+            "Prefer bullet points, include equations if visible, and name any diagrams.\n\n"
+            f"Question:\n{question}"
+        )
+        resp = gemini_model.generate_content([prompt, {"mime_type": mime, "data": bytes_data}])
+        return (resp.text or "").strip()
+    except Exception as e:
+        st.warning(f"Vision analysis failed for {file.name}: {e}")
+        return ""
+
 def process_images_to_context(question: str, images, mode: str):
-    """
-    Returns: (combined_text, per_image_notes)
-    combined_text: a single string appended to StudentAnswer for grading
-    per_image_notes: list of dicts with filename and extracted info (for transparency)
-    """
     if not images:
         return "", []
 
@@ -237,28 +257,11 @@ def process_images_to_context(question: str, images, mode: str):
         ocr_text = ""
         vision_text = ""
 
-        if mode in ["OCR only", "OCR + Vision"]:
+        if mode in ["OCR only", "OCR + Gemini"]:
             ocr_text = ocr_image(file)
 
-        if mode in ["Vision model (Groq)", "OCR + Vision"] and vision_model:
-            try:
-                file.seek(0)
-                data_url = image_to_base64(file)
-                msg = HumanMessage(
-                    content=[
-                        {"type": "text", "text": (
-                            "You are assisting an assignment grader. "
-                            "Given the teacher's question below, extract ONLY the content from this image that is useful "
-                            "for grading the student's answer. Prefer bullet points, include math if visible, and note any diagrams.\n\n"
-                            f"Question:\n{question}\n\nNow, analyze the image:"
-                        )},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ]
-                )
-                vision_resp = vision_model.invoke([msg])
-                vision_text = (getattr(vision_resp, "content", "") or "").strip()
-            except Exception as e:
-                st.warning(f"Vision analysis failed for {file.name}: {e}")
+        if mode in ["Vision (Gemini)", "OCR + Gemini"]:
+            vision_text = gemini_analyze_image(file, question)
 
         note = {
             "file": file.name,
@@ -279,15 +282,12 @@ def process_images_to_context(question: str, images, mode: str):
 
     combined_text = "\n\n---\n".join(all_chunks)
     return combined_text.strip(), per_image_notes
-# -----------------------------------------------------------------------------------------
 
-# Assignment Grading Form
 with st.form("grading_form"):
     st.subheader("Assignment Details")
     question = st.text_area("Enter the question:", key="question_input", height=100)
     ideal_answer = st.text_area("Enter the ideal answer:", key="ideal_answer_input", height=150)
 
-    # ------------------------ Student Answer block ------------------------
     st.subheader("Student Answer")
     student_answer_text = st.text_area(
         "Type the student's answer (optional if uploading image):",
@@ -303,8 +303,8 @@ with st.form("grading_form"):
 
     image_processing_mode = st.radio(
         "If images are provided, how should we process them?",
-        ["OCR only", "Vision model (Groq)", "OCR + Vision"],
-        index=2 if vision_model and OCR_AVAILABLE else (1 if vision_model else 0),
+        ["OCR only", "Vision (Gemini)", "OCR + Gemini"],
+        index=2 if GEMINI_AVAILABLE and OCR_AVAILABLE else (1 if GEMINI_AVAILABLE else 0),
         help="OCR extracts raw text. Vision model can summarize/structure content useful for grading."
     )
 
@@ -315,16 +315,13 @@ with st.form("grading_form"):
                 with cols[i % len(cols)]:
                     st.image(f, caption=f.name, use_container_width=True)
                     f.seek(0)
-    # -----------------------------------------------------------------------------------
 
     grading_style = st.selectbox("Select grading style:", ["Balanced", "Strict", "Lenient"], key="grading_style_select")
     submit_button = st.form_submit_button("Grade Answer")
 
-# Grading Logic
 if submit_button:
     if question and ideal_answer and (student_answer_text or student_answer_images):
         with st.spinner("Grading in progress... Please wait."):
-            # Process images (if any) and augment student answer
             image_context_text = ""
             per_image_notes = []
             if student_answer_images:
@@ -361,7 +358,7 @@ if submit_button:
                     "timestamp": timestamp,
                     "question": question.strip(),
                     "ideal_answer": ideal_answer.strip(),
-                    "student_answer": (student_answer_text or "").strip(), 
+                    "student_answer": (student_answer_text or "").strip(),
                     "evaluation": evaluation.strip(),
                     "feedback": "",
                     "detailed_feedback": "",
@@ -385,7 +382,6 @@ if submit_button:
     else:
         st.warning("Please ensure the Question and Ideal Answer are filled, and provide either typed Student Answer or upload image(s).")
 
-# Display Grading Result and Feedback Form
 if st.session_state.get("just_graded", False) and st.session_state.last_eval:
     evaluation = st.session_state.last_eval["evaluation"]
 
@@ -412,7 +408,6 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
         st.markdown(evaluation)
         st.markdown("---")
 
-    # Show image-derived context for transparency
     if st.session_state.last_image_notes:
         with st.expander("Image-derived context used for grading"):
             for note in st.session_state.last_image_notes:
@@ -422,7 +417,6 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
                 if note.get("vision_excerpt"):
                     st.code(note["vision_excerpt"], language="markdown")
 
-    # Feedback Form
     with st.form("feedback_form"):
         st.subheader("Provide Feedback on this Evaluation")
         satisfaction = st.radio(
@@ -440,7 +434,6 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
             )
         submit_feedback_button = st.form_submit_button("Submit Feedback")
 
-    # Process feedback
     if submit_feedback_button:
         if satisfaction == "No" and not detailed_feedback_text.strip():
             st.warning("Please provide detailed feedback if you are not satisfied, so the AI can learn and improve.")
@@ -500,7 +493,6 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
 
         st.session_state.just_graded = False
 
-# Display Current Session Evaluations
 if st.session_state.history:
     st.markdown("---")
     with st.expander("View Your Current Session Evaluations"):
@@ -529,7 +521,6 @@ if st.session_state.history:
         help="Download all grading records from your current session."
     )
 
-# Display Global Grading History from Google Sheet
 st.markdown("---")
 if st.checkbox("Show All Grading History (from Google Sheet)"):
     try:
