@@ -10,17 +10,16 @@ import os
 
 # ------------------------ Image channel ------------------------
 from PIL import Image
-import io
 import base64
 
-# Optional OCR (safe fallback)
+# Optional OCR
 try:
     import pytesseract
     OCR_AVAILABLE = True
 except Exception:
     OCR_AVAILABLE = False
 
-from langchain.schema import HumanMessage 
+from langchain.schema import HumanMessage  
 # -----------------------------------------------------------------------------
 
 # Auth0 credentials
@@ -79,7 +78,7 @@ grade_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 refine_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
 # ------------------------ Vision model init (Groq) ------------------------
-VISION_MODEL_NAME = "llama-3.2-11b-vision-preview"  # change if your Groq account exposes a different one
+VISION_MODEL_NAME = "llama-3.2-11b-vision-preview" 
 try:
     vision_model = init_chat_model(VISION_MODEL_NAME, model_provider="groq")
 except Exception as e:
@@ -184,7 +183,7 @@ Another example:
 "When evaluating 'Completeness', ensure all sub-parts explicitly mentioned in the question are addressed, even if briefly."
 """
 
-# Session state initialization for persistent data within the session
+# Session state
 if "history" not in st.session_state:
     st.session_state.history = []
 if "last_eval" not in st.session_state:
@@ -193,40 +192,13 @@ if "just_graded" not in st.session_state:
     st.session_state.just_graded = False
 if "current_adaptive_instruction" not in st.session_state:
     st.session_state.current_adaptive_instruction = ""
-# ------------------------ hold last image notes ------------------------
 if "last_image_notes" not in st.session_state:
     st.session_state.last_image_notes = []
-# ---------------------------------------------------------------------------
-
-# ------------------------ Image upload UI (before grading form) ------------------------
-st.markdown("## Optional: Upload Supporting Images")
-uploaded_images = st.file_uploader(
-    "Upload one or more images (JPG/PNG/WebP) that contain the student's work, diagrams, or handwritten answers.",
-    type=["jpg", "jpeg", "png", "webp"],
-    accept_multiple_files=True
-)
-
-image_processing_mode = st.radio(
-    "How should we process images?",
-    ["OCR only", "Vision model (Groq)", "OCR + Vision"],
-    index=2 if vision_model and OCR_AVAILABLE else (1 if vision_model else 0),
-    help="OCR extracts raw text. Vision model can summarize/structure content useful for grading."
-)
-
-if uploaded_images:
-    with st.expander("Preview uploaded images"):
-        cols = st.columns(min(3, len(uploaded_images)))
-        for i, f in enumerate(uploaded_images):
-            with cols[i % len(cols)]:
-                st.image(f, caption=f.name, use_container_width=True)
-                f.seek(0)
-# -------------------------------------------------------------------------------------------
 
 # ------------------------ helper functions for image → text ------------------------
 def image_to_base64(file):
     bytes_data = file.read()
     b64 = base64.b64encode(bytes_data).decode("utf-8")
-    # naive MIME guess
     name = file.name.lower()
     if name.endswith("png"):
         mime = "image/png"
@@ -248,7 +220,7 @@ def ocr_image(file):
         st.warning(f"OCR failed for {file.name}: {e}")
         return ""
 
-def process_images_to_context(question: str, images):
+def process_images_to_context(question: str, images, mode: str):
     """
     Returns: (combined_text, per_image_notes)
     combined_text: a single string appended to StudentAnswer for grading
@@ -265,10 +237,10 @@ def process_images_to_context(question: str, images):
         ocr_text = ""
         vision_text = ""
 
-        if image_processing_mode in ["OCR only", "OCR + Vision"]:
+        if mode in ["OCR only", "OCR + Vision"]:
             ocr_text = ocr_image(file)
 
-        if image_processing_mode in ["Vision model (Groq)", "OCR + Vision"] and vision_model:
+        if mode in ["Vision model (Groq)", "OCR + Vision"] and vision_model:
             try:
                 file.seek(0)
                 data_url = image_to_base64(file)
@@ -307,38 +279,67 @@ def process_images_to_context(question: str, images):
 
     combined_text = "\n\n---\n".join(all_chunks)
     return combined_text.strip(), per_image_notes
-# -------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------
 
 # Assignment Grading Form
 with st.form("grading_form"):
     st.subheader("Assignment Details")
     question = st.text_area("Enter the question:", key="question_input", height=100)
     ideal_answer = st.text_area("Enter the ideal answer:", key="ideal_answer_input", height=150)
-    student_answer = st.text_area("Enter the student's answer:", key="student_answer_input", height=150)
+
+    # ------------------------ Student Answer block ------------------------
+    st.subheader("Student Answer")
+    student_answer_text = st.text_area(
+        "Type the student's answer (optional if uploading image):",
+        key="student_answer_input", height=150
+    )
+
+    student_answer_images = st.file_uploader(
+        "Or upload student's answer image(s):",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True,
+        key="student_answer_images"
+    )
+
+    image_processing_mode = st.radio(
+        "If images are provided, how should we process them?",
+        ["OCR only", "Vision model (Groq)", "OCR + Vision"],
+        index=2 if vision_model and OCR_AVAILABLE else (1 if vision_model else 0),
+        help="OCR extracts raw text. Vision model can summarize/structure content useful for grading."
+    )
+
+    if student_answer_images:
+        with st.expander("Preview uploaded student answer images"):
+            cols = st.columns(min(3, len(student_answer_images)))
+            for i, f in enumerate(student_answer_images):
+                with cols[i % len(cols)]:
+                    st.image(f, caption=f.name, use_container_width=True)
+                    f.seek(0)
+    # -----------------------------------------------------------------------------------
+
     grading_style = st.selectbox("Select grading style:", ["Balanced", "Strict", "Lenient"], key="grading_style_select")
-    
     submit_button = st.form_submit_button("Grade Answer")
 
 # Grading Logic
 if submit_button:
-    if question and ideal_answer and student_answer:
+    if question and ideal_answer and (student_answer_text or student_answer_images):
         with st.spinner("Grading in progress... Please wait."):
-            # ------------------------ process images and augment student answer ------------------------
+            # Process images (if any) and augment student answer
             image_context_text = ""
             per_image_notes = []
-            if uploaded_images:
-                with st.spinner("Processing images..."):
-                    image_context_text, per_image_notes = process_images_to_context(question, uploaded_images)
+            if student_answer_images:
+                with st.spinner("Processing student answer images..."):
+                    image_context_text, per_image_notes = process_images_to_context(
+                        question, student_answer_images, image_processing_mode
+                    )
 
-            student_answer_augmented = student_answer.strip()
+            student_answer_augmented = student_answer_text.strip() if student_answer_text else ""
             if image_context_text:
                 student_answer_augmented += (
-                    "\n\n---\n[IMAGE-DERIVED CONTEXT FOR GRADING]\n" +
-                    image_context_text
+                    "\n\n---\n[IMAGE-DERIVED CONTEXT FOR GRADING]\n" + image_context_text
                 )
-            # Store notes for later display
+
             st.session_state.last_image_notes = per_image_notes
-            # -----------------------------------------------------------------------------------------------
 
             full_grading_prompt = ""
             if st.session_state.current_adaptive_instruction:
@@ -346,7 +347,7 @@ if submit_button:
             full_grading_prompt += base_prompt_template.format(
                 question=question.strip(),
                 ideal_answer=ideal_answer.strip(),
-                student_answer=student_answer_augmented,  # NEW: use augmented answer
+                student_answer=student_answer_augmented,
                 grading_style=grading_style
             )
 
@@ -360,7 +361,7 @@ if submit_button:
                     "timestamp": timestamp,
                     "question": question.strip(),
                     "ideal_answer": ideal_answer.strip(),
-                    "student_answer": student_answer.strip(), 
+                    "student_answer": (student_answer_text or "").strip(), 
                     "evaluation": evaluation.strip(),
                     "feedback": "",
                     "detailed_feedback": "",
@@ -372,7 +373,7 @@ if submit_button:
                     "timestamp": timestamp,
                     "question": question.strip(),
                     "ideal_answer": ideal_answer.strip(),
-                    "student_answer": student_answer.strip(), 
+                    "student_answer": (student_answer_text or "").strip(),
                     "evaluation": evaluation.strip()
                 }
 
@@ -382,24 +383,22 @@ if submit_button:
                 st.error(f"Error during AI grading: {e}. Please try again.")
                 st.session_state.just_graded = False
     else:
-        st.warning("Please ensure all fields (Question, Ideal Answer, Student Answer) are filled before grading.")
+        st.warning("Please ensure the Question and Ideal Answer are filled, and provide either typed Student Answer or upload image(s).")
 
 # Display Grading Result and Feedback Form
 if st.session_state.get("just_graded", False) and st.session_state.last_eval:
     evaluation = st.session_state.last_eval["evaluation"]
 
     st.subheader("Evaluation Result")
-    # More robust parsing for evaluation content
     if "## Justification:" in evaluation:
-        parts = evaluation.split("## Justification:", 1) 
+        parts = evaluation.split("## Justification:", 1)
         marks_section_raw = parts[0].strip()
         explanation_section = parts[1].strip()
 
-        # Remove "## Marks:" if it exists in the raw marks section
         if marks_section_raw.startswith("## Marks:"):
             marks_section = marks_section_raw[len("## Marks:"):].strip()
         else:
-            marks_section = marks_section_raw 
+            marks_section = marks_section_raw
 
         st.markdown("---")
         st.subheader("Marks Breakdown")
@@ -413,7 +412,7 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
         st.markdown(evaluation)
         st.markdown("---")
 
-    # Show what was extracted from images
+    # Show image-derived context for transparency
     if st.session_state.last_image_notes:
         with st.expander("Image-derived context used for grading"):
             for note in st.session_state.last_image_notes:
@@ -422,9 +421,8 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
                     st.code(note["ocr_excerpt"], language="markdown")
                 if note.get("vision_excerpt"):
                     st.code(note["vision_excerpt"], language="markdown")
-    # -----------------------------------------------------------------------------------------
 
-    # Feedback Form for Self-Improvement
+    # Feedback Form
     with st.form("feedback_form"):
         st.subheader("Provide Feedback on this Evaluation")
         satisfaction = st.radio(
@@ -436,20 +434,18 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
         detailed_feedback_text = ""
         if satisfaction == "No":
             detailed_feedback_text = st.text_area(
-                "If 'No', please explain what was wrong or how it should have been graded differently (e.g., 'Content Accuracy was too high, it missed X fact'). This detailed feedback will be used to improve the AI's grading logic for future assignments.",
+                "If 'No', please explain what was wrong or how it should have been graded differently.",
                 key="detailed_feedback_text_area",
                 height=100
             )
-        
         submit_feedback_button = st.form_submit_button("Submit Feedback")
 
-    # Logic to process feedback and trigger prompt improvement
+    # Process feedback
     if submit_feedback_button:
-        # If user is not satisfied but didn't provide detailed feedback, warn them
         if satisfaction == "No" and not detailed_feedback_text.strip():
             st.warning("Please provide detailed feedback if you are not satisfied, so the AI can learn and improve.")
-            st.session_state.just_graded = True # Keep the feedback form visible
-            st.stop() # Stop execution here to prevent logging and prompt refinement without feedback
+            st.session_state.just_graded = True
+            st.stop()
 
         st.session_state.history[-1]["feedback"] = satisfaction
         st.session_state.history[-1]["detailed_feedback"] = detailed_feedback_text.strip()
