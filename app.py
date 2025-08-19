@@ -78,7 +78,7 @@ grade_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 refine_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
 # ------------------------ Vision model init (Groq) ------------------------
-VISION_MODEL_NAME = "llama-3.2-11b-vision-preview" 
+VISION_MODEL_NAME = "llama-3.2-90b-vision-preview"
 try:
     vision_model = init_chat_model(VISION_MODEL_NAME, model_provider="groq")
 except Exception as e:
