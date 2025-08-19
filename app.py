@@ -377,6 +377,8 @@ if submit_button:
                     "\n\n---\n[IMAGE-DERIVED CONTEXT FOR GRADING]\n" + image_context_text
                 )
 
+            student_answer_for_log = (image_context_text.strip() if image_context_text else (student_answer_text or "").strip())
+
             st.session_state.last_image_notes = per_image_notes
 
             try:
@@ -415,7 +417,7 @@ if submit_button:
                     "timestamp": timestamp,
                     "question": question.strip(),
                     "ideal_answer": ideal_answer.strip(),
-                    "student_answer": (student_answer_text or "").strip(),
+                    "student_answer": student_answer_for_log,
                     "evaluation": evaluation.strip(),
                     "feedback": "",
                     "detailed_feedback": "",
@@ -427,7 +429,7 @@ if submit_button:
                     "timestamp": timestamp,
                     "question": question.strip(),
                     "ideal_answer": ideal_answer.strip(),
-                    "student_answer": (student_answer_text or "").strip(),
+                    "student_answer": student_answer_for_log,
                     "evaluation": evaluation.strip()
                 }
 
