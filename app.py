@@ -4,26 +4,24 @@ import datetime
 import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+from google.oauth2.service_account import Credentials as SACredentials
 from streamlit_auth0 import login_button
 from langchain.chat_models import init_chat_model
 import os
 
-# ------------------------ Image channel ------------------------
-from PIL import Image
-import base64
-
-try:
-    import pytesseract
-    OCR_AVAILABLE = True
-except Exception:
-    OCR_AVAILABLE = False
+# ------------------------ Images ------------------------
+from PIL import Image  
+import io
 
 from langchain.schema import HumanMessage
 import google.generativeai as genai
 from langchain.output_parsers import StructuredOutputParser, ResponseSchema
 from langchain.prompts import ChatPromptTemplate
-# -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Auth0 Login
 client_id = st.secrets["AUTH0_CLIENT_ID"]
 domain = st.secrets["AUTH0_DOMAIN"]
 
@@ -44,6 +42,8 @@ else:
     st.warning("Please log in with Google to continue using the Assignment Grader.")
     st.stop()
 
+# -----------------------------------------------------------------------------
+# Google Sheets Auth
 creds_dict = st.secrets["gcp_service_account"]
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(creds_dict), scope)
@@ -55,15 +55,70 @@ except Exception as e:
     st.error(f"Error connecting to Google Sheets: {e}. Please ensure your 'gcp_service_account' secrets are correctly configured and the service account has access to the 'autograde_logs' spreadsheet.")
     st.stop()
 
-expected_headers = ["User", "DateTime", "Question", "StudentAnswer", "Evaluation", "Feedback", "DetailedFeedback", "GeneratedInstruction"]
+# -----------------------------------------------------------------------------
+# Google Drive Auth
+drive_scopes = ["https://www.googleapis.com/auth/drive"]
+creds_gdrive = SACredentials.from_service_account_info(dict(creds_dict), scopes=drive_scopes)
+drive_service = build("drive", "v3", credentials=creds_gdrive)
+
+DRIVE_UPLOAD_FOLDER_ID = st.secrets.get("DRIVE_UPLOAD_FOLDER_ID", "")
+if not DRIVE_UPLOAD_FOLDER_ID:
+    st.error("Missing DRIVE_UPLOAD_FOLDER_ID in secrets.toml")
+    st.stop()
+
+def _infer_mime_from_name(name: str) -> str:
+    name = name.lower()
+    if name.endswith(".png"):
+        return "image/png"
+    if name.endswith(".webp"):
+        return "image/webp"
+    if name.endswith(".jpg") or name.endswith(".jpeg"):
+        return "image/jpeg"
+    return "application/octet-stream"
+
+def upload_image_to_drive(file, folder_id: str, make_public: bool = True) -> str:
+    """Upload file to Google Drive folder, return shareable link."""
+    try:
+        file.seek(0)
+        mime = _infer_mime_from_name(file.name)
+        media = MediaIoBaseUpload(file, mimetype=mime, resumable=False)
+        metadata = {"name": file.name, "parents": [folder_id]}
+        created = drive_service.files().create(
+            body=metadata, media_body=media, fields="id, webViewLink"
+        ).execute()
+
+        file_id = created["id"]
+        if make_public:
+            drive_service.permissions().create(
+                fileId=file_id,
+                body={"role": "reader", "type": "anyone"},
+                fields="id"
+            ).execute()
+
+        return created.get("webViewLink", "")
+    except Exception as e:
+        st.warning(f"Drive upload failed for {file.name}: {e}")
+        return ""
+
+# -----------------------------------------------------------------------------
+# Ensure Headers (add ImageLinks)
+expected_headers = ["User", "DateTime", "Question", "StudentAnswer",
+                    "Evaluation", "Feedback", "DetailedFeedback",
+                    "GeneratedInstruction", "ImageLinks"]
 current_headers = sheet.row_values(1)
 if not current_headers:
     sheet.insert_row(expected_headers, 1)
 else:
+    updated = False
     for header in expected_headers:
         if header not in current_headers:
-            st.warning(f"The column '{header}' is missing in your 'autograde_logs' Google Sheet. Please add it manually for full logging functionality.")
+            current_headers.append(header)
+            updated = True
+    if updated:
+        sheet.update('1:1', [current_headers])
 
+# -----------------------------------------------------------------------------
+# Models
 if "GROQ_API_KEY" in st.secrets:
     os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
 else:
@@ -73,7 +128,7 @@ else:
 grade_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 refine_model = init_chat_model("llama3-8b-8192", model_provider="groq")
 
-# ------------------------ Vision model init (Groq) ------------------------
+# ------------------------ Vision model init (Gemini ONLY) --------------------
 GEMINI_AVAILABLE = False
 GEMINI_MODEL_NAME = "gemini-1.5-flash"
 if "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"]:
@@ -83,11 +138,11 @@ if "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"]:
         GEMINI_AVAILABLE = True
     except Exception as e:
         gemini_model = None
-        st.warning(f"Vision model not initialized: {e}. OCR will be used if available.")
+        st.warning(f"Vision model not initialized: {e}. Image processing requires Gemini.")
 else:
     gemini_model = None
-# ------------------------------------------------------------------------------
 
+# Prompt templates
 base_prompt_template = """
 You are an expert assignment grader.
 
@@ -222,6 +277,8 @@ Return ONLY a JSON object following this schema:
 """.strip()
 )
 
+# -----------------------------------------------------------------------------
+# Session State
 if "history" not in st.session_state:
     st.session_state.history = []
 if "last_eval" not in st.session_state:
@@ -232,41 +289,11 @@ if "current_adaptive_instruction" not in st.session_state:
     st.session_state.current_adaptive_instruction = ""
 if "last_image_notes" not in st.session_state:
     st.session_state.last_image_notes = []
+if "last_uploaded_links" not in st.session_state:
+    st.session_state.last_uploaded_links = []
 
-def image_to_base64(file):
-    bytes_data = file.read()
-    b64 = base64.b64encode(bytes_data).decode("utf-8")
-    name = file.name.lower()
-    if name.endswith("png"):
-        mime = "image/png"
-    elif name.endswith("webp"):
-        mime = "image/webp"
-    else:
-        mime = "image/jpeg"
-    return f"data:{mime};base64,{b64}"
-
-def ocr_image(file):
-    if not OCR_AVAILABLE:
-        return ""
-    try:
-        img = Image.open(file).convert("RGB")
-        file.seek(0)
-        text = pytesseract.image_to_string(img)
-        return (text or "").strip()
-    except Exception as e:
-        st.warning(f"OCR failed for {file.name}: {e}")
-        return ""
-
-def _infer_mime_from_name(name: str) -> str:
-    name = name.lower()
-    if name.endswith(".png"):
-        return "image/png"
-    if name.endswith(".webp"):
-        return "image/webp"
-    if name.endswith(".jpg") or name.endswith(".jpeg"):
-        return "image/jpeg"
-    return "application/octet-stream"
-
+# -----------------------------------------------------------------------------
+# Gemini-only helpers
 def gemini_analyze_image(file, question: str) -> str:
     if not GEMINI_AVAILABLE:
         return ""
@@ -286,7 +313,8 @@ def gemini_analyze_image(file, question: str) -> str:
         st.warning(f"Vision analysis failed for {file.name}: {e}")
         return ""
 
-def process_images_to_context(question: str, images, mode: str):
+def process_images_to_context(question: str, images):
+    """Process images using Gemini only. Returns combined text and per-image notes."""
     if not images:
         return "", []
 
@@ -295,35 +323,24 @@ def process_images_to_context(question: str, images, mode: str):
 
     for file in images:
         file.seek(0)
-        ocr_text = ""
-        vision_text = ""
-
-        if mode in ["OCR only", "OCR + Gemini"]:
-            ocr_text = ocr_image(file)
-
-        if mode in ["Vision (Gemini)", "OCR + Gemini"]:
-            vision_text = gemini_analyze_image(file, question)
+        vision_text = gemini_analyze_image(file, question)
 
         note = {
             "file": file.name,
-            "ocr_excerpt": (ocr_text[:800] + "…") if ocr_text and len(ocr_text) > 800 else ocr_text,
             "vision_excerpt": (vision_text[:800] + "…") if vision_text and len(vision_text) > 800 else vision_text
         }
         per_image_notes.append(note)
 
-        chunk = []
-        if ocr_text:
-            chunk.append(f"[OCR:{file.name}]\n{ocr_text}")
         if vision_text:
-            chunk.append(f"[VISION:{file.name}]\n{vision_text}")
-        if chunk:
-            all_chunks.append("\n".join(chunk))
+            all_chunks.append(f"[VISION:{file.name}]\n{vision_text}")
 
         file.seek(0)
 
     combined_text = "\n\n---\n".join(all_chunks)
     return combined_text.strip(), per_image_notes
 
+# -----------------------------------------------------------------------------
+# Form
 with st.form("grading_form"):
     st.subheader("Assignment Details")
     question = st.text_area("Enter the question:", key="question_input", height=100)
@@ -342,13 +359,6 @@ with st.form("grading_form"):
         key="student_answer_images"
     )
 
-    image_processing_mode = st.radio(
-        "If images are provided, how should we process them?",
-        ["OCR only", "Vision (Gemini)", "OCR + Gemini"],
-        index=2 if GEMINI_AVAILABLE and OCR_AVAILABLE else (1 if GEMINI_AVAILABLE else 0),
-        help="OCR extracts raw text. Vision model can summarize/structure content useful for grading."
-    )
-
     if student_answer_images:
         with st.expander("Preview uploaded student answer images"):
             cols = st.columns(min(3, len(student_answer_images)))
@@ -360,27 +370,52 @@ with st.form("grading_form"):
     grading_style = st.selectbox("Select grading style:", ["Balanced", "Strict", "Lenient"], key="grading_style_select")
     submit_button = st.form_submit_button("Grade Answer")
 
+# -----------------------------------------------------------------------------
+# Main Grading Logic + Drive Upload + Logging
 if submit_button:
     if question and ideal_answer and (student_answer_text or student_answer_images):
+        # If images are provided but Gemini isn't configured, stop (OCR removed by request)
+        if student_answer_images and not GEMINI_AVAILABLE:
+            st.error("Image processing requires Gemini (GEMINI_API_KEY not set or model failed to initialize). Add GEMINI_API_KEY to secrets and try again.")
+            st.stop()
+
         with st.spinner("Grading in progress... Please wait."):
+            # 1) Upload images to Drive and collect links
+            uploaded_links = []
+            if student_answer_images:
+                with st.spinner("Uploading images to Google Drive..."):
+                    for f in student_answer_images:
+                        link = upload_image_to_drive(f, DRIVE_UPLOAD_FOLDER_ID, make_public=True)
+                        if link:
+                            uploaded_links.append(link)
+            st.session_state.last_uploaded_links = uploaded_links
+
+            if uploaded_links:
+                st.subheader("Uploaded Image Links")
+                for url in uploaded_links:
+                    st.markdown(f"- [{url}]({url})")
+
+            # 2) Build image-derived context (Gemini ONLY)
             image_context_text = ""
             per_image_notes = []
             if student_answer_images:
-                with st.spinner("Processing student answer images..."):
+                with st.spinner("Analyzing images with Gemini..."):
                     image_context_text, per_image_notes = process_images_to_context(
-                        question, student_answer_images, image_processing_mode
+                        question, student_answer_images
                     )
 
+            # 3) Augment student answer with image context for grading
             student_answer_augmented = student_answer_text.strip() if student_answer_text else ""
             if image_context_text:
                 student_answer_augmented += (
                     "\n\n---\n[IMAGE-DERIVED CONTEXT FOR GRADING]\n" + image_context_text
                 )
 
+            # For logging: if typed text missing, log the image-derived text
             student_answer_for_log = (image_context_text.strip() if image_context_text else (student_answer_text or "").strip())
-
             st.session_state.last_image_notes = per_image_notes
 
+            # 4) Run grading
             try:
                 chain = json_prompt | grade_model | json_output_parser
                 parsed = chain.invoke({
@@ -412,6 +447,7 @@ if submit_button:
 """.strip()
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+                # 5) Save to session state history
                 st.session_state.history.append({
                     "user": user_info["email"],
                     "timestamp": timestamp,
@@ -421,9 +457,11 @@ if submit_button:
                     "evaluation": evaluation.strip(),
                     "feedback": "",
                     "detailed_feedback": "",
-                    "generated_instruction": ""
+                    "generated_instruction": "",
+                    "image_links": "; ".join(uploaded_links)
                 })
 
+                # 6) Cache last evaluation for feedback step
                 st.session_state.last_eval = {
                     "email": user_info["email"],
                     "timestamp": timestamp,
@@ -441,6 +479,7 @@ if submit_button:
     else:
         st.warning("Please ensure the Question and Ideal Answer are filled, and provide either typed Student Answer or upload image(s).")
 
+# Show Evaluation + Feedback form 
 if st.session_state.get("just_graded", False) and st.session_state.last_eval:
     evaluation = st.session_state.last_eval["evaluation"]
 
@@ -467,15 +506,21 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
         st.markdown(evaluation)
         st.markdown("---")
 
+    # Display image-derived notes
     if st.session_state.last_image_notes:
         with st.expander("Image-derived context used for grading"):
             for note in st.session_state.last_image_notes:
                 st.markdown(f"**{note['file']}**")
-                if note.get("ocr_excerpt"):
-                    st.code(note["ocr_excerpt"], language="markdown")
                 if note.get("vision_excerpt"):
                     st.code(note["vision_excerpt"], language="markdown")
 
+    # Display uploaded image links (from this grading)
+    if st.session_state.last_uploaded_links:
+        with st.expander("Uploaded image links for this submission"):
+            for url in st.session_state.last_uploaded_links:
+                st.markdown(f"- [{url}]({url})")
+
+    # Feedback form
     with st.form("feedback_form"):
         st.subheader("Provide Feedback on this Evaluation")
         satisfaction = st.radio(
@@ -499,6 +544,7 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
             st.session_state.just_graded = True
             st.stop()
 
+        # Update last history entry with feedback
         st.session_state.history[-1]["feedback"] = satisfaction
         st.session_state.history[-1]["detailed_feedback"] = detailed_feedback_text.strip()
 
@@ -514,7 +560,7 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
                 )
                 try:
                     refine_response = refine_model.invoke(refine_prompt)
-                    generated_instruction = refine_response.content.strip()
+                    generated_instruction = (refine_response.content or "").strip()
 
                     if generated_instruction and generated_instruction != "NO_IMPROVEMENT_NEEDED":
                         st.session_state.current_adaptive_instruction = generated_instruction
@@ -524,14 +570,18 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
                         st.session_state.current_adaptive_instruction = ""
                 except Exception as e:
                     st.error(f"Error during prompt refinement: {e}. The grading prompt could not be improved at this time.")
-                    st.session_session.current_adaptive_instruction = ""
+                    st.session_state.current_adaptive_instruction = ""
         else:
             st.info("Feedback submitted. No prompt improvement needed for positive feedback.")
             st.session_state.current_adaptive_instruction = ""
 
         st.session_state.history[-1]["generated_instruction"] = generated_instruction
 
+        # Build row for Google Sheet (log)
         cleaned_eval = st.session_state.last_eval["evaluation"].replace("\n", " ⏎ ")
+
+        # Use last uploaded links from session (saved at grading time)
+        image_links_cell = "; ".join(st.session_state.last_uploaded_links) if st.session_state.last_uploaded_links else ""
 
         row_to_append = [
             st.session_state.last_eval["email"],
@@ -541,7 +591,8 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
             cleaned_eval,
             satisfaction,
             st.session_state.history[-1]["detailed_feedback"],
-            generated_instruction
+            generated_instruction,
+            image_links_cell 
         ]
 
         try:
@@ -551,7 +602,11 @@ if st.session_state.get("just_graded", False) and st.session_state.last_eval:
             st.error(f"Error appending data to Google Sheet: {e}. Please check permissions and sheet name.")
 
         st.session_state.just_graded = False
+        # Clear last_uploaded_links so they don't leak into next submission accidentally
+        st.session_state.last_uploaded_links = []
 
+# -----------------------------------------------------------------------------
+# History Viewer + Downloads
 if st.session_state.history:
     st.markdown("---")
     with st.expander("View Your Current Session Evaluations"):
@@ -563,6 +618,11 @@ if st.session_state.history:
             st.markdown(f"**Student Answer:** {entry['student_answer']}")
             st.markdown("**AI Evaluation:**")
             st.markdown(entry["evaluation"])
+            if entry.get("image_links"):
+                st.markdown("**Image Links:**")
+                for url in entry["image_links"].split("; "):
+                    if url.strip():
+                        st.markdown(f"- [{url}]({url})")
             if entry["feedback"]:
                 st.markdown(f"**User Feedback:** {entry['feedback']}")
             if entry["detailed_feedback"]:
