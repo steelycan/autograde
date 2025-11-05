@@ -17,7 +17,7 @@ from streamlit_auth0 import login_button
 
 # -------- LLM grading --------
 from langchain.chat_models import init_chat_model
-from langchain_core.output_parsers import StructuredOutputParser, ResponseSchema
+from langchain.output_parsers import StructuredOutputParser, ResponseSchema
 from langchain.prompts import ChatPromptTemplate
 
 # -------- Vision (Gemini only) --------
