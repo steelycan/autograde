@@ -146,7 +146,7 @@ def get_app_drive_service():
             flow.fetch_token(code=code)
             creds = flow.credentials
             refresh_token = creds.refresh_token
-            st.success("✅ One-time Google OAuth completed.")
+            st.success("One-time Google OAuth completed.")
             st.warning("Copy this REFRESH TOKEN into your secrets as GOOGLE_OAUTH_REFRESH_TOKEN:")
             st.code(refresh_token or "(no refresh token returned — ensure access_type=offline, prompt=consent)")
             try:
@@ -216,8 +216,8 @@ else:
     st.error("GROQ_API_KEY missing in secrets.")
     st.stop()
 
-grade_model = init_chat_model("llama3-8b-8192", model_provider="groq")
-refine_model = init_chat_model("llama3-8b-8192", model_provider="groq")
+grade_model = init_chat_model("llama-3.1-8b-instant", model_provider="groq")
+refine_model = init_chat_model("llama-3.1-8b-instant", model_provider="groq")
 
 GEMINI_AVAILABLE = False
 if st.secrets.get("GEMINI_API_KEY"):
