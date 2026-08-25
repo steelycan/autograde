@@ -16,9 +16,14 @@ from google.auth.transport.requests import Request
 from streamlit_auth0 import login_button
 
 # -------- LLM grading --------
-from langchain.chat_models import init_chat_model
-from langchain.output_parsers import StructuredOutputParser, ResponseSchema
-from langchain.prompts import ChatPromptTemplate
+try:
+    from langchain.chat_models import init_chat_model
+except ImportError:  # very old/new layouts
+    from langchain_core.language_models import init_chat_model  # type: ignore
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from pydantic import BaseModel, Field
 
 # -------- Vision (Gemini only) --------
 import google.generativeai as genai
@@ -48,7 +53,7 @@ else:
     st.stop()
 
 # =============================================================================
-# Google Sheets via Service Account (unchanged)
+# Google Sheets via Service Account
 # =============================================================================
 creds_dict = st.secrets["gcp_service_account"]
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -232,20 +237,21 @@ else:
     gemini_model = None
 
 # =============================================================================
-# Prompts (unchanged)
+# Prompts
 # =============================================================================
 base_prompt_template = """(omitted for brevity; unchanged rubric)"""
 refine_prompt_template = """(omitted for brevity; unchanged refine prompt)"""
 
-response_schemas = [
-    ResponseSchema(name="content_accuracy", description="Score out of 3 as a number"),
-    ResponseSchema(name="completeness", description="Score out of 2 as a number"),
-    ResponseSchema(name="language_clarity", description="Score out of 2 as a number"),
-    ResponseSchema(name="depth_understanding", description="Score out of 2 as a number"),
-    ResponseSchema(name="structure_coherence", description="Score out of 1 as a number"),
-    ResponseSchema(name="justification", description="Detailed explanation"),
-]
-json_output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
+class GradeResult(BaseModel):
+    content_accuracy: float = Field(description="Score out of 3 as a number")
+    completeness: float = Field(description="Score out of 2 as a number")
+    language_clarity: float = Field(description="Score out of 2 as a number")
+    depth_understanding: float = Field(description="Score out of 2 as a number")
+    structure_coherence: float = Field(description="Score out of 1 as a number")
+    justification: str = Field(description="Detailed explanation")
+
+
+json_output_parser = JsonOutputParser(pydantic_object=GradeResult)
 json_format_instructions = json_output_parser.get_format_instructions()
 json_prompt = ChatPromptTemplate.from_template(
     """
@@ -435,7 +441,7 @@ if submit_button:
         st.session_state.just_graded = False
 
 # =============================================================================
-# Results + Feedback (unchanged, plus link display)
+# Results + Feedback (plus link display)
 # =============================================================================
 if st.session_state.get("just_graded", False) and st.session_state.last_eval:
     evaluation = st.session_state.last_eval["evaluation"]
